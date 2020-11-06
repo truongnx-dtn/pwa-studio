@@ -13,12 +13,57 @@ const OrderConfirmationPage = props => {
     const classes = mergeClasses(defaultClasses, props.classes);
     const { data, orderNumber } = props;
     const { formatMessage } = useIntl();
+    const talonProps = useOrderConfirmationPage({ data });
+    const { dataError, flatData, isSignedIn } = talonProps;
 
-    const talonProps = useOrderConfirmationPage({
-        data
-    });
+    useEffect(() => {
+        window.scrollTo({
+            left: 0,
+            top: 0,
+            behavior: 'smooth'
+        });
+    }, []);
 
-    const { flatData, isSignedIn } = talonProps;
+    // if something was wrong with the order details, simplify the confirmation
+    if (dataError || !flatData) {
+        return (
+            <div className={classes.root}>
+                <Title>
+                    {formatMessage(
+                        {
+                            id: 'checkoutPage.titleReceipt',
+                            defaultMessage: 'Receipt'
+                        },
+                        { name: STORE_NAME }
+                    )}
+                </Title>
+                <div className={classes.mainContainer}>
+                    <h2 className={classes.heading}>
+                        <FormattedMessage
+                            id={'checkoutPage.thankYou'}
+                            defaultMessage={'Thank you for your order!'}
+                        />
+                    </h2>
+                    <div className={classes.orderNumber}>
+                        <FormattedMessage
+                            id={'checkoutPage.orderNumber'}
+                            defaultMessage={'Order Number'}
+                            values={{ orderNumber }}
+                        />
+                    </div>
+                    <div className={classes.additionalText}>
+                        <FormattedMessage
+                            id={'checkoutPage.additionalText'}
+                            defaultMessage={
+                                'You will also receive an email with the details and we will let you know when your order has shipped.'
+                            }
+                        />
+                    </div>
+                </div>
+                <div className={classes.sidebarContainer} />
+            </div>
+        );
+    }
 
     const {
         city,
@@ -39,14 +84,6 @@ const OrderConfirmationPage = props => {
             </span>
         );
     });
-
-    useEffect(() => {
-        window.scrollTo({
-            left: 0,
-            top: 0,
-            behavior: 'smooth'
-        });
-    }, []);
 
     const createAccountForm = !isSignedIn ? (
         <CreateAccount
