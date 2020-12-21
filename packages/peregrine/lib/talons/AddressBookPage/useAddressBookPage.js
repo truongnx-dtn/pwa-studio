@@ -1,26 +1,33 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useHistory } from 'react-router-dom';
-import { useQuery } from '@apollo/client';
+import { useMutation, useQuery } from '@apollo/client';
 
 import { useAppContext } from '@magento/peregrine/lib/context/app';
 import { useUserContext } from '@magento/peregrine/lib/context/user';
+import mergeOperations from '@magento/peregrine/lib/util/shallowMerge';
+
+import defaultOperations from './addressBookPage.gql';
 
 /**
  *  A talon to support the functionality of the Address Book page.
  *
+ *  @function
+ *
  *  @param {Object} props
- *  @param {Object} props.queries - GraphQL queries to be run by the talon.
+ *  @param {Object} props.operations - GraphQL operations to be run by the talon.
  *
+ *  @returns {AddressBookPageTalonProps}
  *
- *  @returns {Object}   talonProps
- *  @returns {Object}   talonProps.data - The user's address book data.
- *  @returns {Boolean}  talonProps.isLoading - Indicates whether the user's
- *      address book data is loading.
+ * @example <caption>Importing into your project</caption>
+ * import { useAddressBookPage } from '@magento/peregrine/lib/talons/AddressBookPage/useAddressBookPage';
  */
-export const useAddressBookPage = props => {
+export const useAddressBookPage = (props = {}) => {
+    const operations = mergeOperations(defaultOperations, props.operations);
     const {
-        queries: { getCustomerAddressesQuery }
-    } = props;
+        createCustomerAddressMutation,
+        getCustomerAddressesQuery,
+        updateCustomerAddressMutation
+    } = operations;
 
     const [
         ,
@@ -28,14 +35,47 @@ export const useAddressBookPage = props => {
             actions: { setPageLoading }
         }
     ] = useAppContext();
-    const history = useHistory();
     const [{ isSignedIn }] = useUserContext();
+
+    const history = useHistory();
+
     const { data: customerAddressesData, loading } = useQuery(
         getCustomerAddressesQuery,
         {
+            fetchPolicy: 'cache-and-network',
             skip: !isSignedIn
         }
     );
+    const isRefetching = !!customerAddressesData && loading;
+    const customerAddresses =
+        (customerAddressesData &&
+            customerAddressesData.customer &&
+            customerAddressesData.customer.addresses) ||
+        [];
+
+    const [
+        createCustomerAddress,
+        {
+            error: createCustomerAddressError,
+            loading: isCreatingCustomerAddress
+        }
+    ] = useMutation(createCustomerAddressMutation);
+    const [
+        updateCustomerAddress,
+        {
+            error: updateCustomerAddressError,
+            loading: isUpdatingCustomerAddress
+        }
+    ] = useMutation(updateCustomerAddressMutation);
+
+    const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [isDialogEditMode, setIsDialogEditMode] = useState(false);
+    const [formAddress, setFormAddress] = useState({});
+
+    // Use local state to determine whether to display errors or not.
+    // Could be replaced by a "reset mutation" function from apollo client.
+    // https://github.com/apollographql/apollo-feature-requests/issues/170
+    const [displayError, setDisplayError] = useState(false);
 
     // If the user is no longer signed in, redirect to the home page.
     useEffect(() => {
@@ -46,21 +86,145 @@ export const useAddressBookPage = props => {
 
     // Update the page indicator if the GraphQL query is in flight.
     useEffect(() => {
-        setPageLoading(loading);
-    }, [loading, setPageLoading]);
+        setPageLoading(isRefetching);
+    }, [isRefetching, setPageLoading]);
 
     const handleAddAddress = useCallback(() => {
-        alert('TODO!');
+        // Hide all previous errors when we open the dialog.
+        setDisplayError(false);
+
+        setIsDialogEditMode(false);
+        setFormAddress({ country_code: 'US' });
+        setIsDialogOpen(true);
     }, []);
 
-    const customerAddresses =
-        (customerAddressesData &&
-            customerAddressesData.customer &&
-            customerAddressesData.customer.addresses) ||
-        [];
+    const handleEditAddress = useCallback(address => {
+        // Hide all previous errors when we open the dialog.
+        setDisplayError(false);
+
+        setIsDialogEditMode(true);
+        setFormAddress(address);
+        setIsDialogOpen(true);
+    }, []);
+
+    const handleCancelDialog = useCallback(() => {
+        setIsDialogOpen(false);
+    }, []);
+
+    const handleConfirmDialog = useCallback(
+        async formValues => {
+            if (isDialogEditMode) {
+                try {
+                    await updateCustomerAddress({
+                        variables: {
+                            addressId: formAddress.id,
+                            updated_address: formValues
+                        },
+                        refetchQueries: [{ query: getCustomerAddressesQuery }],
+                        awaitRefetchQueries: true
+                    });
+
+                    setIsDialogOpen(false);
+                } catch {
+                    // Make sure any errors from the mutations are displayed.
+                    setDisplayError(true);
+
+                    // we have an onError link that logs errors, and FormError
+                    // already renders this error, so just return to avoid
+                    // triggering the success callback
+                    return;
+                }
+            } else {
+                try {
+                    await createCustomerAddress({
+                        variables: { address: formValues },
+                        refetchQueries: [{ query: getCustomerAddressesQuery }],
+                        awaitRefetchQueries: true
+                    });
+
+                    setIsDialogOpen(false);
+                } catch {
+                    // Make sure any errors from the mutations are displayed.
+                    setDisplayError(true);
+
+                    // we have an onError link that logs errors, and FormError
+                    // already renders this error, so just return to avoid
+                    // triggering the success callback
+                    return;
+                }
+            }
+        },
+        [
+            createCustomerAddress,
+            formAddress,
+            getCustomerAddressesQuery,
+            isDialogEditMode,
+            updateCustomerAddress
+        ]
+    );
+
+    const formErrors = useMemo(() => {
+        if (displayError) {
+            return new Map([
+                ['createCustomerAddressMutation', createCustomerAddressError],
+                ['updateCustomerAddressMutation', updateCustomerAddressError]
+            ]);
+        } else return new Map();
+    }, [createCustomerAddressError, displayError, updateCustomerAddressError]);
+
+    // use data from backend until Intl.DisplayNames is widely supported
+    const countryDisplayNameMap = useMemo(() => {
+        const countryMap = new Map();
+
+        if (customerAddressesData) {
+            const { countries } = customerAddressesData;
+            countries.forEach(country => {
+                countryMap.set(country.id, country.full_name_locale);
+            });
+        }
+
+        return countryMap;
+    }, [customerAddressesData]);
+
+    const isDialogBusy = isCreatingCustomerAddress || isUpdatingCustomerAddress;
+    const isLoadingWithoutData = !customerAddressesData && loading;
+
+    const formProps = {
+        initialValues: formAddress
+    };
 
     return {
+        countryDisplayNameMap,
         customerAddresses,
-        handleAddAddress
+        formErrors,
+        formProps,
+        handleAddAddress,
+        handleCancelDialog,
+        handleConfirmDialog,
+        handleEditAddress,
+        isDialogBusy,
+        isDialogEditMode,
+        isDialogOpen,
+        isLoading: isLoadingWithoutData
     };
 };
+
+/**
+ * Object type returned by the {@link useAddressBookPage} talon.
+ * It provides props data to use when rendering the address book page component.
+ *
+ * @typedef {Object} AddressBookPageTalonProps
+ *
+ * @property {Map} countryDisplayNameMap - A Map of country id to its localized display name.
+ * @property {Array<Object>} customerAddresses - A list of customer addresses.
+ * @property {Map} formErrors - A Map of form errors.
+ * @property {Object} formProps - Properties to pass to the add/edit form.
+ * @property {Function} handleAddAdddress - Function to invoke when adding a new address.
+ * @property {Function} handleCancelDialog - Function to invoke when cancelling the add/edit dialog.
+ * @property {Function} handleConfirmDialog - Function to invoke when submitting the add/edit dialog.
+ * @property {Function} handleEditAddress - Function to invoke when editing an existing address.
+ * @property {Boolean} isDialogBusy - Whether actions inside the dialog should be disabled.
+ * @property {Boolean} isDialogEditMode - Whether the dialog is in edit mode (true) or add new mode (false).
+ * @property {Boolean} isDialogOpen - Whether the dialog should be open.
+ * @property {Boolean} isLoading - Whether the page is loading.
+ */
